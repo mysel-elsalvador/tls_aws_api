@@ -6,7 +6,7 @@ import type {
   APIGatewayProxyStructuredResultV2 as Result,
 } from "aws-lambda";
 import { type Db, log, poolFromEnv, wrap } from "./db";
-import { getStation, listStations, me, type Options } from "./stations";
+import { getHistory, getStation, listStations, MAX_HISTORY_HOURS, me, type Options } from "./stations";
 import type { ApiError } from "./types";
 
 let db: Db | undefined;
@@ -45,6 +45,19 @@ export async function route(db: Db, event: Event, opt: Options): Promise<Result>
         if (r.kind === "not_found") return fail(404, "not_found");
         if (r.kind === "inactive") return fail(403, "organization_inactive");
         return json(200, { station: r.station, tanks: r.tanks, alarms: r.alarms });
+      }
+      case "GET /v1/stations/{id}/history": {
+        const id = event.pathParameters?.id ?? "";
+        if (!/^[1-9][0-9]{0,17}$/.test(id)) return fail(400, "bad_request", "id must be a station number");
+        const hoursParam = event.queryStringParameters?.hours ?? "24";
+        const hours = /^[1-9][0-9]{0,2}$/.test(hoursParam) ? Number(hoursParam) : 0;
+        if (hours < 1 || hours > MAX_HISTORY_HOURS) {
+          return fail(400, "bad_request", `hours must be 1..${MAX_HISTORY_HOURS}`);
+        }
+        const r = await getHistory(db, sub, id, hours, opt);
+        if (r.kind === "not_found") return fail(404, "not_found");
+        if (r.kind === "inactive") return fail(403, "organization_inactive");
+        return json(200, r.history);
       }
       default:
         return fail(404, "not_found", `no route ${event.routeKey}`);

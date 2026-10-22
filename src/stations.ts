@@ -3,7 +3,7 @@
 // organizations, only while the organization is active, and only the
 // stations they may see (see visible below).
 import type { Db } from "./db";
-import type { Alarm, ConsoleState, Me, Org, StationSummary, Tank } from "./types";
+import type { Alarm, ConsoleState, History, Me, Org, StationSummary, Tank, TankHistory } from "./types";
 
 export async function me(db: Db, sub: string): Promise<Me> {
   const rows = await db.query<Org & { email: string }>(
@@ -104,6 +104,50 @@ export async function getStation(db: Db, sub: string, id: string, opt: Options):
     ),
   ]);
   return { kind: "ok", station: summary(row, opt), tanks, alarms };
+}
+
+/** Longest history window the API serves: one week. */
+export const MAX_HISTORY_HOURS = 168;
+
+export type HistoryResult =
+  | { kind: "ok"; history: History }
+  | { kind: "not_found" }
+  | { kind: "inactive" };
+
+/**
+ * Readings of the station's console collected in the last `hours`, per tank,
+ * oldest first. Time is collected_at (agent clock, UTC): console clocks may
+ * be skewed. Readings without collected_at are left out.
+ */
+export async function getHistory(db: Db, sub: string, id: string, hours: number, opt: Options): Promise<HistoryResult> {
+  const [row] = await db.query<SummaryRow>(sqlSummaries, [sub, id]);
+  if (!row) return { kind: "not_found" };
+  if (!row.org_active) return { kind: "inactive" };
+  const from = new Date(opt.now.getTime() - hours * 3600_000);
+  const [points, latest] = await Promise.all([
+    db.query<{ tank: number; collected_at: Date; height: number | null; volume: number | null }>(
+      `SELECT tank, collected_at, height, volume
+       FROM readings
+       WHERE agent_id = $1 AND console_id = $2 AND collected_at >= $3 AND collected_at <= $4
+       ORDER BY tank, collected_at`,
+      [row.agent_id, row.console_id, from, opt.now],
+    ),
+    db.query<Pick<Tank, "tank" | "units">>(
+      `SELECT tank, units FROM tank_latest WHERE agent_id = $1 AND console_id = $2`,
+      [row.agent_id, row.console_id],
+    ),
+  ]);
+  const units = new Map(latest.map((t) => [t.tank, t.units]));
+  const tanks = new Map<number, TankHistory>();
+  for (const p of points) {
+    let t = tanks.get(p.tank);
+    if (!t) tanks.set(p.tank, (t = { tank: p.tank, units: units.get(p.tank) ?? null, points: [] }));
+    t.points.push([p.collected_at.toISOString(), p.height, p.volume]);
+  }
+  return {
+    kind: "ok",
+    history: { from: from.toISOString(), to: opt.now.toISOString(), tanks: [...tanks.values()] },
+  };
 }
 
 function summary(r: SummaryRow, opt: Options): StationSummary {

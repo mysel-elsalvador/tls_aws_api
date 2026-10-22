@@ -77,6 +77,21 @@ export interface StationDetail {
   alarms: Alarm[];
 }
 
+/** GET /v1/stations/{id}/history: readings in [from, to], per tank. */
+export interface History {
+  from: string;
+  to: string;
+  tanks: TankHistory[]; // only tanks with readings in the window
+}
+
+export interface TankHistory {
+  tank: number;
+  units: Tank["units"]; // of the latest reading
+  // [collected_at (UTC), height, volume], oldest first. Compact: a week of
+  // 5-minute readings is ~2,000 points per tank.
+  points: [string, number | null, number | null][];
+}
+
 export interface ApiError {
   error: "not_found" | "bad_request" | "organization_inactive" | "internal";
   message?: string;

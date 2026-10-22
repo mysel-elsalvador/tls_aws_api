@@ -5,7 +5,7 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { run } from "../src/admin";
 import { type Db, wrap } from "../src/db";
-import { getStation, listStations, me } from "../src/stations";
+import { getHistory, getStation, listStations, me } from "../src/stations";
 
 const MIGRATIONS = new URL("../../aws/migrations/", import.meta.url);
 const now = new Date();
@@ -195,6 +195,38 @@ describe.skipIf(!process.env.HUB_TEST_PG)("postgres", () => {
     expect((await getStation(web, "u-texaco", ids.c!, opt)).kind).toBe("inactive");
     expect((await getStation(web, "u-both", ids.c!, opt)).kind).toBe("inactive");
     expect((await getStation(web, "u-puma", "999999", opt)).kind).toBe("not_found");
+  });
+
+  it("history: readings in the window by agent time, per tank, oldest first", async () => {
+    // Older console times, so tank_latest (by console_time) is unchanged.
+    await owner.query(
+      `INSERT INTO readings (agent_id, console_id, tank, console_time, collected_at, height, volume, batch_id) VALUES
+         ('station-a', 'tls2-1', 2, '2026-10-21 10:00', $1, 60.5, 5400, 'h1'),
+         ('station-a', 'tls2-1', 2, '2026-10-20 10:00', $2, 61, 5500, 'h1'),
+         ('station-a', 'tls2-1', 2, '2026-10-19 10:00', NULL, 62, 5600, 'h1')`,
+      [ago(30 * 3600), ago(100 * 3600)],
+    );
+    const h = async (hours: number) => {
+      const r = await getHistory(web, "u-puma", ids.a!, hours, opt);
+      if (r.kind !== "ok") throw new Error(r.kind);
+      return r.history;
+    };
+    const day = await h(24);
+    expect(day.to).toBe(now.toISOString());
+    expect(day.tanks.map((t) => [t.tank, t.units, t.points.map((p) => p[0])])).toEqual([
+      [2, { volume: "gal" }, [ago(600), ago(60)]],
+      [3, null, [ago(60)]],
+    ]);
+    expect(day.tanks[0]!.points[1]).toEqual([ago(60), null, 4997.5]);
+    expect((await h(48)).tanks[0]!.points.map((p) => p[1])).toEqual([60.5, null, null]);
+    expect((await h(168)).tanks[0]!.points.map((p) => p[2])).toEqual([5500, 5400, 5000, 4997.5]);
+
+    // Other console of the same agent, other tenants, inactive organizations.
+    const a2 = await getHistory(web, "u-puma", ids.a2!, 24, opt);
+    expect(a2.kind === "ok" && a2.history.tanks.map((t) => t.tank)).toEqual([1]);
+    expect((await getHistory(web, "u-texaco", ids.a!, 24, opt)).kind).toBe("not_found");
+    expect((await getHistory(web, "u-none", ids.a!, 24, opt)).kind).toBe("not_found");
+    expect((await getHistory(web, "u-texaco", ids.c!, 24, opt)).kind).toBe("inactive");
   });
 
   it("activating the organization shows its data", async () => {

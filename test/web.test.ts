@@ -76,6 +76,31 @@ describe("route", () => {
     expect(body).toHaveProperty("alarms");
   });
 
+  it("history validates hours before querying, default 24", async () => {
+    const calls: unknown[][] = [];
+    const hist = (hours?: string) => {
+      const e = event("GET /v1/stations/{id}/history", "u1", "7");
+      return route(fakeDb([row], calls), { ...e, queryStringParameters: hours === undefined ? undefined : { hours } }, opt);
+    };
+    for (const h of ["0", "169", "-1", "1.5", "abc", "0024"]) expect((await hist(h)).statusCode).toBe(400);
+    expect(calls).toHaveLength(0);
+
+    const res = await hist();
+    expect(res.statusCode).toBe(200);
+    expect(calls[0]).toEqual(["u1", "7"]);
+    expect(calls[1]![2]).toEqual(new Date(now.getTime() - 24 * 3600_000));
+    expect(JSON.parse(String(res.body))).toEqual({
+      from: "2026-10-15T12:00:00.000Z", to: now.toISOString(), tanks: [],
+    });
+    expect((await hist("168")).statusCode).toBe(200);
+  });
+
+  it("history: 404 not the caller's, 403 inactive", async () => {
+    const e = event("GET /v1/stations/{id}/history", "u1", "7");
+    expect((await route(fakeDb([]), e, opt)).statusCode).toBe(404);
+    expect((await route(fakeDb([{ ...row, org_active: false }]), e, opt)).statusCode).toBe(403);
+  });
+
   it("500 without leaking the error", async () => {
     const db: Db = { query: async () => { throw new Error("password authentication failed for hub_web"); } };
     const res = await route(db, event("GET /v1/stations", "u1"), opt);

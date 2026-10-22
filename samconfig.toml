@@ -1,7 +1,7 @@
-version = 0.1
+version = 0.2
 
 [default.global.parameters]
-region = "us-east-1" # same account and region as the ingest stack (../aws)
+region = "us-east-2" # same account and region as the ingest stack (../aws)
 
 [default.build.parameters]
 cached = false

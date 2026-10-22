@@ -190,6 +190,9 @@ Resources:
         Station:
           Type: HttpApi
           Properties: { ApiId: !Ref WebApi, Method: GET, Path: "/v1/stations/{id}" }
+        StationHistory:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WebApi, Method: GET, Path: "/v1/stations/{id}/history" }
 
   AdminLogGroup:
     Type: AWS::Logs::LogGroup
