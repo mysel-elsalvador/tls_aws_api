@@ -1,0 +1,25 @@
+{
+  "name": "hub-web-api",
+  "private": true,
+  "description": "Read API for the hub web app (Cognito JWT -> Lambda -> RDS PostgreSQL). See README.md.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:pg": "bash scripts/test-pg.sh"
+  },
+  "dependencies": {
+    "@aws-sdk/rds-signer": "^3.1152.0",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.164",
+    "@types/node": "^22.20.5",
+    "@types/pg": "^8.23.1",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

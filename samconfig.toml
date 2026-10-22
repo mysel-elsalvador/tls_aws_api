@@ -1,0 +1,21 @@
+version = 0.1
+
+[default.global.parameters]
+region = "us-east-1" # same account and region as the ingest stack (../aws)
+
+[default.build.parameters]
+cached = false
+
+[dev.deploy.parameters]
+stack_name = "hub-web-dev"
+resolve_s3 = true
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+confirm_changeset = false
+parameter_overrides = "Stage=dev IngestStack=hub-dev AllowLocalDev=true"
+
+[prod.deploy.parameters]
+stack_name = "hub-web-prod"
+resolve_s3 = true
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+confirm_changeset = true
+parameter_overrides = "Stage=prod IngestStack=hub-prod AllowLocalDev=false"

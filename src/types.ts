@@ -1,0 +1,83 @@
+// JSON contract of the web API (v1). The web app has a copy in
+// ../page/src/lib/types.ts; keep both in sync.
+//
+// Console times ("console_time", "alarm_time") have no zone and are sent
+// exactly as the console reported them. Everything ending in "_at" is UTC.
+
+export interface Me {
+  email: string | null; // null: the Cognito user is not linked to any organization
+  orgs: Org[];
+}
+
+export interface Org {
+  id: string;
+  slug: string;
+  name: string;
+  active: boolean; // false: subscription off, no data
+  role: "viewer" | "admin";
+  // all: every station of the organization (admins, or all_stations).
+  // assigned: only the stations granted to the user, possibly none.
+  stations: "all" | "assigned";
+}
+
+export type AgentState = "online" | "offline" | "never"; // never: no heartbeat received yet
+export type ConsoleState = "online" | "offline" | "unknown";
+
+/** A station is one console read by an agent; one agent may serve several stations. */
+export interface StationSummary {
+  id: string;
+  name: string;
+  address: string | null;
+  org: { id: string; name: string };
+  agent: {
+    id: string;
+    state: AgentState;
+    version: string | null;
+    last_heartbeat_at: string | null;
+  };
+  // The station's console on that agent (id from the agent's config; null:
+  // not assigned yet, no data). State from the agent's last heartbeat,
+  // "unknown" when the agent is not online.
+  console: { id: string | null; state: ConsoleState };
+  tanks: number;
+  active_alarms: number;
+  last_reading_at: string | null;
+}
+
+export interface Tank {
+  console_id: string;
+  tank: number;
+  product_code: string | null;
+  status: string | null;
+  console_time: string;
+  collected_at: string | null;
+  volume: number | null;
+  tc_volume: number | null;
+  ullage: number | null;
+  height: number | null;
+  water: number | null;
+  temperature: number | null;
+  water_volume: number | null;
+  units: { volume?: string; height?: string; temp?: string } | null;
+}
+
+/** Active alarm (function 113). Codes are sent as the console reports them. */
+export interface Alarm {
+  console_id: string;
+  category: string | null;
+  type: string | null;
+  number: number | null;
+  alarm_time: string | null;
+  first_seen_at: string | null;
+}
+
+export interface StationDetail {
+  station: StationSummary;
+  tanks: Tank[];
+  alarms: Alarm[];
+}
+
+export interface ApiError {
+  error: "not_found" | "bad_request" | "organization_inactive" | "internal";
+  message?: string;
+}

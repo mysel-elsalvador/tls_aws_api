@@ -1,0 +1,325 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  hub web: Cognito users -> API Gateway (HTTP API, JWT authorizer) -> web Lambda (TypeScript, VPC) ->
+  RDS PostgreSQL of the ingest stack (read-only). Plus the S3 + CloudFront site for ../page. See README.md.
+
+Parameters:
+  Stage:
+    Type: String
+    AllowedValues: [dev, prod]
+    Default: dev
+  IngestStack:
+    Type: String
+    Default: hub-dev
+    Description: >-
+      Name of the ingest stack (../aws). Its exports give the VPC subnets, the security group allowed into
+      the database, and the database endpoint. Deploy it first (it also creates the tenancy tables).
+  AllowLocalDev:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: Allow http://localhost:3000 (next dev) as a CORS origin.
+  DbSslMode:
+    Type: String
+    AllowedValues: [verify-full, require]
+    Default: verify-full
+    Description: verify-full checks the RDS certificate (Lambda CA bundle). require only encrypts.
+  OnlineWindowSeconds:
+    Type: Number
+    Default: 180
+    Description: An agent without a heartbeat for this long is shown offline (it sends one every 60 s).
+  ApiRateLimit:
+    Type: Number
+    Default: 20
+  ApiBurstLimit:
+    Type: Number
+    Default: 40
+
+Conditions:
+  IsProd: !Equals [!Ref Stage, prod]
+  LocalDev: !Equals [!Ref AllowLocalDev, "true"]
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures: [arm64]
+    CodeUri: .
+    MemorySize: 512
+    AutoPublishAlias: live
+    VpcConfig:
+      SubnetIds:
+        - { "Fn::ImportValue": !Sub "${IngestStack}-DbSubnetA" }
+        - { "Fn::ImportValue": !Sub "${IngestStack}-DbSubnetB" }
+      SecurityGroupIds:
+        - { "Fn::ImportValue": !Sub "${IngestStack}-LambdaSecurityGroup" }
+    Environment:
+      Variables:
+        DB_HOST: { "Fn::ImportValue": !Sub "${IngestStack}-DbHost" }
+        DB_PORT: { "Fn::ImportValue": !Sub "${IngestStack}-DbPort" }
+        DB_NAME: hub
+        DB_SSLMODE: !Ref DbSslMode
+        # Node 20+ on Lambda does not load the Amazon CAs (RDS) by default.
+        NODE_EXTRA_CA_CERTS: /var/runtime/ca-cert.pem
+        NODE_OPTIONS: --enable-source-maps
+    Tags:
+      app: hub
+      stage: !Ref Stage
+
+Resources:
+  # ---------------------------------------------------------------- users
+  # Only administrators create users (scripts/add-user.sh): access is sold
+  # per organization, so there is no self sign-up.
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      UserPoolName: !Sub "${AWS::StackName}-users"
+      UsernameAttributes: [email]
+      UsernameConfiguration: { CaseSensitive: false }
+      AutoVerifiedAttributes: [email]
+      AccountRecoverySetting:
+        RecoveryMechanisms: [{ Name: verified_email, Priority: 1 }]
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+        InviteMessageTemplate:
+          EmailSubject: Acceso a hub
+          EmailMessage: !Sub >-
+            Su usuario es {username} y su contraseña temporal es {####} .
+            Ingrese en https://${WebDistribution.DomainName}/login/ y elija una contraseña nueva.
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          TemporaryPasswordValidityDays: 7
+      DeletionProtection: !If [IsProd, ACTIVE, INACTIVE]
+      UserPoolTags: { app: hub, stage: !Ref Stage }
+
+  # Public client (static site): no secret, SRP only.
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: web
+      GenerateSecret: false
+      ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      RefreshTokenValidity: 30
+      TokenValidityUnits: { AccessToken: minutes, IdToken: minutes, RefreshToken: days }
+
+  # ---------------------------------------------------------------- API
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${AWS::StackName}"
+      RetentionInDays: 90
+
+  WebApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Description: hub web read API
+      Auth:
+        DefaultAuthorizer: Cognito
+        Authorizers:
+          Cognito:
+            IdentitySource: $request.header.Authorization
+            JwtConfiguration:
+              issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+              audience: [!Ref UserPoolClient] # access tokens: checked against client_id
+      CorsConfiguration:
+        # The !If must stay inside the list: SAM replaces the whole CORS block
+        # with a top-level !If, and API Gateway then silently has no CORS.
+        AllowOrigins:
+          - !Sub "https://${WebDistribution.DomainName}"
+          - !If [LocalDev, "http://localhost:3000", !Ref AWS::NoValue]
+        AllowMethods: [GET]
+        AllowHeaders: [authorization, content-type]
+        MaxAge: 600
+      DefaultRouteSettings:
+        ThrottlingRateLimit: !Ref ApiRateLimit
+        ThrottlingBurstLimit: !Ref ApiBurstLimit
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiLogGroup.Arn
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","time":"$context.requestTime",
+          "route":"$context.routeKey","status":"$context.status","sub":"$context.authorizer.claims.sub",
+          "latencyMs":"$context.responseLatency","authError":"$context.authorizer.error",
+          "integrationError":"$context.integrationErrorMessage"}
+
+  WebLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-web"
+      RetentionInDays: 90
+
+  WebFunction:
+    Type: AWS::Serverless::Function
+    Metadata: { BuildMethod: makefile }
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-web"
+      Description: Read API for the web app (stations, tanks, alarms), scoped by organization.
+      Handler: web.handler
+      Timeout: 15
+      LoggingConfig: { LogFormat: JSON, LogGroup: !Ref WebLogGroup }
+      Environment:
+        Variables:
+          DB_USER: hub_web # read-only, IAM auth (aws/migrations/003_tenancy.sql)
+          ONLINE_WINDOW_S: !Ref OnlineWindowSeconds
+      Policies:
+        - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action: rds-db:connect
+              Resource: !Sub
+                - "arn:${AWS::Partition}:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${Rid}/hub_web"
+                - Rid: { "Fn::ImportValue": !Sub "${IngestStack}-DbResourceId" }
+      Events:
+        Me:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WebApi, Method: GET, Path: /v1/me }
+        Stations:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WebApi, Method: GET, Path: /v1/stations }
+        Station:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WebApi, Method: GET, Path: "/v1/stations/{id}" }
+
+  AdminLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-admin"
+      RetentionInDays: 365
+
+  # Not behind the API. Invoked by operators (make admin, scripts/add-user.sh).
+  AdminFunction:
+    Type: AWS::Serverless::Function
+    Metadata: { BuildMethod: makefile }
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-admin"
+      Description: Manages organizations (active flag), stations and users. Invoke directly.
+      Handler: admin.handler
+      Timeout: 30
+      LoggingConfig: { LogFormat: JSON, LogGroup: !Ref AdminLogGroup }
+      Environment:
+        Variables:
+          DB_USER: hub_tenant
+      Policies:
+        - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action: rds-db:connect
+              Resource: !Sub
+                - "arn:${AWS::Partition}:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${Rid}/hub_tenant"
+                - Rid: { "Fn::ImportValue": !Sub "${IngestStack}-DbResourceId" }
+
+  # ---------------------------------------------------------------- web site (../page, static export)
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Statement:
+          - Sid: CloudFrontOnly
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${WebBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${WebDistribution}"
+          - Sid: TLSOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt WebBucket.Arn, !Sub "${WebBucket.Arn}/*"]
+            Condition: { Bool: { "aws:SecureTransport": "false" } }
+
+  WebOriginAccess:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-web"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # The export writes /station/index.html; S3 (private origin) does not
+  # resolve directories, so /station and /station/ are rewritten here.
+  WebRewrite:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${AWS::StackName}-index"
+      AutoPublish: true
+      FunctionConfig: { Comment: directory -> index.html, Runtime: cloudfront-js-2.0 }
+      FunctionCode: |
+        function handler(event) {
+          var r = event.request;
+          if (r.uri.endsWith('/')) r.uri += 'index.html';
+          else if (r.uri.split('/').pop().indexOf('.') === -1) r.uri += '/index.html';
+          return r;
+        }
+
+  WebDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${AWS::StackName} web"
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: web
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt WebOriginAccess.Id
+            S3OriginConfig: { OriginAccessIdentity: "" }
+        DefaultCacheBehavior:
+          TargetOriginId: web
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # Managed-CachingOptimized
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03 # Managed-SecurityHeadersPolicy
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebRewrite.FunctionMetadata.FunctionARN
+        CustomErrorResponses:
+          - { ErrorCode: 403, ResponseCode: 404, ResponsePagePath: /404.html, ErrorCachingMinTTL: 60 }
+
+Outputs:
+  ApiUrl:
+    Description: NEXT_PUBLIC_API_URL for ../page
+    Value: !Sub "https://${WebApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  WebUrl:
+    Value: !Sub "https://${WebDistribution.DomainName}"
+  WebBucketName:
+    Value: !Ref WebBucket
+  WebDistributionId:
+    Value: !Ref WebDistribution
+  AdminFunction:
+    Description: 'make admin A=''{"action":"list"}'''
+    Value: !Sub "${AdminFunction}:live"
