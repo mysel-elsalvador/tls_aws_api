@@ -44,7 +44,7 @@ export async function route(db: Db, event: Event, opt: Options): Promise<Result>
         const r = await getStation(db, sub, id, opt);
         if (r.kind === "not_found") return fail(404, "not_found");
         if (r.kind === "inactive") return fail(403, "organization_inactive");
-        return json(200, { station: r.station, tanks: r.tanks, alarms: r.alarms });
+        return json(200, { station: r.station, tanks: r.tanks, alarms: r.alarms, deliveries: r.deliveries });
       }
       case "GET /v1/stations/{id}/history": {
         const id = event.pathParameters?.id ?? "";

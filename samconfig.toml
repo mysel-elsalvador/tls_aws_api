@@ -1,4 +1,4 @@
-version = 0.2
+version = 0.3
 
 [default.global.parameters]
 region = "us-east-2" # same account and region as the ingest stack (../aws)

@@ -3,7 +3,7 @@
 // organizations, only while the organization is active, and only the
 // stations they may see (see visible below).
 import type { Db } from "./db";
-import type { Alarm, ConsoleState, History, Me, Org, StationSummary, Tank, TankHistory } from "./types";
+import type { Alarm, ConsoleState, Delivery, History, Me, Org, StationSummary, Tank, TankHistory } from "./types";
 
 export async function me(db: Db, sub: string): Promise<Me> {
   const rows = await db.query<Org & { email: string }>(
@@ -80,7 +80,7 @@ export async function listStations(db: Db, sub: string, opt: Options): Promise<S
 }
 
 export type StationResult =
-  | { kind: "ok"; station: StationSummary; tanks: Tank[]; alarms: Alarm[] }
+  | { kind: "ok"; station: StationSummary; tanks: Tank[]; alarms: Alarm[]; deliveries: Delivery[] }
   | { kind: "not_found" }
   | { kind: "inactive" };
 
@@ -88,7 +88,7 @@ export async function getStation(db: Db, sub: string, id: string, opt: Options):
   const [row] = await db.query<SummaryRow>(sqlSummaries, [sub, id]);
   if (!row) return { kind: "not_found" };
   if (!row.org_active) return { kind: "inactive" };
-  const [tanks, alarms] = await Promise.all([
+  const [tanks, alarms, deliveries] = await Promise.all([
     db.query<Tank>(
       `SELECT console_id, tank, product_code, status, console_time, collected_at,
          volume, tc_volume, ullage, height, water, temperature, water_volume, units
@@ -102,8 +102,17 @@ export async function getStation(db: Db, sub: string, id: string, opt: Options):
        ORDER BY alarm_time DESC NULLS LAST, category, type, number`,
       [row.agent_id, row.console_id],
     ),
+    db.query<Delivery>(
+      `SELECT console_id, tank, product_code, start_time, end_time,
+         start_volume, end_volume, start_height, end_height,
+         start_temp, end_temp, start_water, end_water, units
+       FROM deliveries WHERE agent_id = $1 AND console_id = $2
+       ORDER BY start_time DESC, tank
+       LIMIT 50`,
+      [row.agent_id, row.console_id],
+    ),
   ]);
-  return { kind: "ok", station: summary(row, opt), tanks, alarms };
+  return { kind: "ok", station: summary(row, opt), tanks, alarms, deliveries };
 }
 
 /** Longest history window the API serves: one week. */

@@ -197,6 +197,32 @@ describe.skipIf(!process.env.HUB_TEST_PG)("postgres", () => {
     expect((await getStation(web, "u-puma", "999999", opt)).kind).toBe("not_found");
   });
 
+  it("station detail: deliveries of that console only, latest first, at most 50", async () => {
+    await owner.query(
+      `INSERT INTO deliveries (agent_id, console_id, tank, product_code, start_time, end_time,
+                               start_volume, end_volume, start_height, end_height, units, batch_id) VALUES
+         ('station-a', 'tls2-1', 2, '2', '2026-10-22 14:36', '2026-10-22 15:01', 2100.5, 7050, 25.1, 62.3, '{"volume":"gal"}', 'd1'),
+         ('station-a', 'tls2-1', 3, '1', '2026-10-22 14:40', NULL, 300, NULL, NULL, NULL, NULL, 'd1'),
+         ('station-a', 'tls2-1', 2, '2', '2026-10-15 09:00', '2026-10-15 09:20', 1000, 6000, NULL, NULL, NULL, 'd1'),
+         ('station-a', 'tls2-2', 1, '1', '2026-10-22 14:36', '2026-10-22 15:00', 1, 2, NULL, NULL, NULL, 'd1')`,
+    );
+    await owner.query(
+      `INSERT INTO deliveries (agent_id, console_id, tank, start_time, batch_id)
+       SELECT 'station-a', 'tls2-1', 4, timestamp '2026-01-01' + n * interval '1 day', 'd2' FROM generate_series(1, 60) n`,
+    );
+    const r = await getStation(web, "u-puma", ids.a!, opt);
+    if (r.kind !== "ok") throw new Error(r.kind);
+    expect(r.deliveries).toHaveLength(50);
+    expect(r.deliveries.slice(0, 3).map((d) => [d.tank, d.start_time, d.end_time, d.start_volume, d.end_volume])).toEqual([
+      [3, "2026-10-22T14:40:00", null, 300, null],
+      [2, "2026-10-22T14:36:00", "2026-10-22T15:01:00", 2100.5, 7050],
+      [2, "2026-10-15T09:00:00", "2026-10-15T09:20:00", 1000, 6000],
+    ]);
+    expect(r.deliveries[1]).toMatchObject({ console_id: "tls2-1", product_code: "2", start_height: 25.1, end_height: 62.3, units: { volume: "gal" } });
+    const r2 = await getStation(web, "u-puma", ids.a2!, opt);
+    expect(r2.kind === "ok" && r2.deliveries.map((d) => d.console_id)).toEqual(["tls2-2"]);
+  });
+
   it("history: readings in the window by agent time, per tank, oldest first", async () => {
     // Older console times, so tank_latest (by console_time) is unchanged.
     await owner.query(

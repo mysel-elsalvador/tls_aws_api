@@ -34,7 +34,7 @@ All of them need `Authorization: Bearer <Cognito access token>`. The contract is
 | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /v1/me`            | email + organizations (`active`, `role`)                                                                                           |
 | `GET /v1/stations`      | stations of the active organizations: agent `online`/`offline`/`never`, console state, tank and active-alarm counts, last reading  |
-| `GET /v1/stations/{id}` | the same summary, plus `tanks` (latest reading per tank) and `alarms` (active, from the latest 113 snapshot), of that console only |
+| `GET /v1/stations/{id}` | the same summary, plus `tanks` (latest reading per tank), `alarms` (active, from the latest 113 snapshot) and `deliveries` (latest 50 tank deliveries from 202/20C, console times), of that console only |
 | `GET /v1/stations/{id}/history?hours=24` | readings of the last `hours` (1..168, default 24) per tank as `[collected_at, height, volume]`, by agent time (console clocks may be skewed). Index from `aws/migrations/006` |
 
 - **Agent online:** a heartbeat within `OnlineWindowSeconds` (180 s; the agent sends one every 60 s).

@@ -71,10 +71,32 @@ export interface Alarm {
   first_seen_at: string | null;
 }
 
+/**
+ * One tank's delivery (function 202/20C), as the console measured it.
+ * Times are console times; start/end values are the tank before and after.
+ */
+export interface Delivery {
+  console_id: string;
+  tank: number;
+  product_code: string | null;
+  start_time: string;
+  end_time: string | null;
+  start_volume: number | null;
+  end_volume: number | null;
+  start_height: number | null;
+  end_height: number | null;
+  start_temp: number | null;
+  end_temp: number | null;
+  start_water: number | null;
+  end_water: number | null;
+  units: Tank["units"];
+}
+
 export interface StationDetail {
   station: StationSummary;
   tanks: Tank[];
   alarms: Alarm[];
+  deliveries: Delivery[]; // latest first, at most 50
 }
 
 /** GET /v1/stations/{id}/history: readings in [from, to], per tank. */
