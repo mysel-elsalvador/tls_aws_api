@@ -1,6 +1,6 @@
 # hub web API
 
-Read API for the web app (`../page`), plus the Cognito users and the S3 + CloudFront hosting of the site. One SAM stack per environment (`hub-web-dev`, `hub-web-prod`), in the same account and region as the ingest stack (`../aws`). It reuses that stack's database.
+Read API for the web app (`../tls_app`), plus the Cognito users and the S3 + CloudFront hosting of the site. One SAM stack per environment (`hub-web-dev`, `hub-web-prod`), in the same account and region as the ingest stack (`../tls_aws_ingest`). It reuses that stack's database.
 
 ```
 browser ──SRP──> Cognito (user pool, admin-created users only)
@@ -13,7 +13,7 @@ operator ──aws lambda invoke──> admin Lambda ──IAM auth, hub_tenant�
 
 ## Tenancy
 
-The tables are in the ingest stack's database (`../aws/migrations/003_tenancy.sql`, `004_station_console.sql`, `005_station_users.sql`), next to the data they gate:
+The tables are in the ingest stack's database (`../tls_aws_ingest/migrations/003_tenancy.sql`, `004_station_console.sql`, `005_station_users.sql`), next to the data they gate:
 
 | Table           | What                                                                                                                                                                   |
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -35,7 +35,7 @@ All of them need `Authorization: Bearer <Cognito access token>`. The contract is
 | `GET /v1/me`            | email + organizations (`active`, `role`)                                                                                           |
 | `GET /v1/stations`      | stations of the active organizations: agent `online`/`offline`/`never`, console state, tank and active-alarm counts, last reading  |
 | `GET /v1/stations/{id}` | the same summary, plus `tanks` (latest reading per tank), `alarms` (active, from the latest 113 snapshot) and `deliveries` (latest 50 tank deliveries from 202/20C, console times), of that console only |
-| `GET /v1/stations/{id}/history?hours=24` | readings of the last `hours` (1..168, default 24) per tank as `[collected_at, height, volume]`, by agent time (console clocks may be skewed). Index from `aws/migrations/006` |
+| `GET /v1/stations/{id}/history?hours=24` | readings of the last `hours` (1..168, default 24) per tank as `[collected_at, height, volume]`, by agent time (console clocks may be skewed). Index from `tls_aws_ingest/migrations/006` |
 
 - **Agent online:** a heartbeat within `OnlineWindowSeconds` (180 s; the agent sends one every 60 s).
 - **Console state:** what the agent's last heartbeat reported for the station's console. It is `unknown` while the agent is not online.
@@ -44,14 +44,14 @@ All of them need `Authorization: Bearer <Cognito access token>`. The contract is
 
 ## Deploy
 
-Deploy `../aws` first. That stack creates the tenancy tables and roles, and the exports this stack imports (`hub-dev-DbSubnetA`, …).
+Deploy `../tls_aws_ingest` first. That stack creates the tenancy tables and roles, and the exports this stack imports (`hub-dev-DbSubnetA`, …).
 
 ```sh
 npm ci
-make test test-pg typecheck     # test-pg: throwaway local PostgreSQL with ../aws/migrations
+make test test-pg typecheck     # test-pg: throwaway local PostgreSQL with ../tls_aws_ingest/migrations
 make deploy                     # = sam build && sam deploy --config-env dev   → stack hub-web-dev
 make deploy ENV=prod            # hub-web-prod, imports from hub-prod, asks to confirm
-cd ../page && npm run deploy    # build the site with this stack's outputs, upload it
+cd ../tls_app && npm run deploy    # build the site with this stack's outputs, upload it
 ```
 
 Outputs: `WebUrl` (the site), `ApiUrl`, `UserPoolId`, `UserPoolClientId`, `WebBucketName`, `WebDistributionId`.

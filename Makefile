@@ -18,7 +18,7 @@ node_modules: package-lock.json
 test: node_modules
 	npx vitest run
 
-# Also runs the SQL against a throwaway local PostgreSQL (schema from ../aws/migrations).
+# Also runs the SQL against a throwaway local PostgreSQL (schema from ../tls_aws_ingest/migrations).
 test-pg: node_modules
 	bash scripts/test-pg.sh
 

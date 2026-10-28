@@ -90,10 +90,12 @@ export async function getStation(db: Db, sub: string, id: string, opt: Options):
   if (!row.org_active) return { kind: "inactive" };
   const [tanks, alarms, deliveries] = await Promise.all([
     db.query<Tank>(
-      `SELECT console_id, tank, product_code, status, console_time, collected_at,
-         volume, tc_volume, ullage, height, water, temperature, water_volume, units
-       FROM tank_latest WHERE agent_id = $1 AND console_id = $2
-       ORDER BY tank`,
+      `SELECT r.console_id, r.tank, r.product_code, l.label AS product_label, r.status, r.console_time, r.collected_at,
+         r.volume, r.tc_volume, r.ullage, r.height, r.water, r.temperature, r.water_volume, r.units
+       FROM tank_latest r
+       LEFT JOIN tank_labels l ON l.agent_id = r.agent_id AND l.console_id = r.console_id AND l.tank = r.tank
+       WHERE r.agent_id = $1 AND r.console_id = $2
+       ORDER BY r.tank`,
       [row.agent_id, row.console_id],
     ),
     db.query<Alarm>(
@@ -103,11 +105,13 @@ export async function getStation(db: Db, sub: string, id: string, opt: Options):
       [row.agent_id, row.console_id],
     ),
     db.query<Delivery>(
-      `SELECT console_id, tank, product_code, start_time, end_time,
-         start_volume, end_volume, start_height, end_height,
-         start_temp, end_temp, start_water, end_water, units
-       FROM deliveries WHERE agent_id = $1 AND console_id = $2
-       ORDER BY start_time DESC, tank
+      `SELECT d.console_id, d.tank, d.product_code, l.label AS product_label, d.start_time, d.end_time,
+         d.start_volume, d.end_volume, d.start_height, d.end_height,
+         d.start_temp, d.end_temp, d.start_water, d.end_water, d.units
+       FROM deliveries d
+       LEFT JOIN tank_labels l ON l.agent_id = d.agent_id AND l.console_id = d.console_id AND l.tank = d.tank
+       WHERE d.agent_id = $1 AND d.console_id = $2
+       ORDER BY d.start_time DESC, d.tank
        LIMIT 50`,
       [row.agent_id, row.console_id],
     ),

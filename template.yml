@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >-
   hub web: Cognito users -> API Gateway (HTTP API, JWT authorizer) -> web Lambda (TypeScript, VPC) ->
-  RDS PostgreSQL of the ingest stack (read-only). Plus the S3 + CloudFront site for ../page. See README.md.
+  RDS PostgreSQL of the ingest stack (read-only). Plus the S3 + CloudFront site for ../tls_app. See README.md.
 
 Parameters:
   Stage:
@@ -13,7 +13,7 @@ Parameters:
     Type: String
     Default: hub-dev
     Description: >-
-      Name of the ingest stack (../aws). Its exports give the VPC subnets, the security group allowed into
+      Name of the ingest stack (../tls_aws_ingest). Its exports give the VPC subnets, the security group allowed into
       the database, and the database endpoint. Deploy it first (it also creates the tenancy tables).
   AllowLocalDev:
     Type: String
@@ -170,7 +170,7 @@ Resources:
       LoggingConfig: { LogFormat: JSON, LogGroup: !Ref WebLogGroup }
       Environment:
         Variables:
-          DB_USER: hub_web # read-only, IAM auth (aws/migrations/003_tenancy.sql)
+          DB_USER: hub_web # read-only, IAM auth (tls_aws_ingest/migrations/003_tenancy.sql)
           ONLINE_WINDOW_S: !Ref OnlineWindowSeconds
       Policies:
         - VPCAccessPolicy: {}
@@ -222,7 +222,7 @@ Resources:
                 - "arn:${AWS::Partition}:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${Rid}/hub_tenant"
                 - Rid: { "Fn::ImportValue": !Sub "${IngestStack}-DbResourceId" }
 
-  # ---------------------------------------------------------------- web site (../page, static export)
+  # ---------------------------------------------------------------- web site (../tls_app, static export)
   WebBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -311,7 +311,7 @@ Resources:
 
 Outputs:
   ApiUrl:
-    Description: NEXT_PUBLIC_API_URL for ../page
+    Description: NEXT_PUBLIC_API_URL for ../tls_app
     Value: !Sub "https://${WebApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
   UserPoolId:
     Value: !Ref UserPool

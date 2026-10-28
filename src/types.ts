@@ -1,5 +1,5 @@
 // JSON contract of the web API (v1). The web app has a copy in
-// ../page/src/lib/types.ts; keep both in sync.
+// ../tls_app/src/lib/types.ts; keep both in sync.
 //
 // Console times ("console_time", "alarm_time") have no zone and are sent
 // exactly as the console reported them. Everything ending in "_at" is UTC.
@@ -48,6 +48,7 @@ export interface Tank {
   console_id: string;
   tank: number;
   product_code: string | null;
+  product_label: string | null; // label set on the console for this tank (602), e.g. "DIESEL"; null if unknown
   status: string | null;
   console_time: string;
   collected_at: string | null;
@@ -79,6 +80,7 @@ export interface Delivery {
   console_id: string;
   tank: number;
   product_code: string | null;
+  product_label: string | null; // label set on the console for this tank (602), e.g. "DIESEL"; null if unknown
   start_time: string;
   end_time: string | null;
   start_volume: number | null;

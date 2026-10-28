@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Starts a throwaway PostgreSQL on a unix socket, runs the tests against it
-# (schema from ../aws/migrations), and removes it. Same idea as
-# ../aws/scripts/test-pg.sh; PG_BIN overrides where the binaries are.
+# (schema from ../tls_aws_ingest/migrations), and removes it. Same idea as
+# ../tls_aws_ingest/scripts/test-pg.sh; PG_BIN overrides where the binaries are.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PG_BIN=${PG_BIN:-$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)}

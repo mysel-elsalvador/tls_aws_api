@@ -1,4 +1,4 @@
-// Runs against a real PostgreSQL with the schema from ../aws/migrations.
+// Runs against a real PostgreSQL with the schema from ../tls_aws_ingest/migrations.
 // Started by scripts/test-pg.sh (make test-pg); skipped otherwise.
 import { readdirSync, readFileSync } from "node:fs";
 import pg from "pg";
@@ -7,7 +7,7 @@ import { run } from "../src/admin";
 import { type Db, wrap } from "../src/db";
 import { getHistory, getStation, listStations, me } from "../src/stations";
 
-const MIGRATIONS = new URL("../../aws/migrations/", import.meta.url);
+const MIGRATIONS = new URL("../../tls_aws_ingest/migrations/", import.meta.url);
 const now = new Date();
 const opt = { now, onlineWindowS: 180 };
 const ago = (s: number) => new Date(now.getTime() - s * 1000).toISOString();
@@ -93,6 +93,14 @@ describe.skipIf(!process.env.HUB_TEST_PG)("postgres", () => {
          ('station-a', 'tls2-2', 'alarm_snapshot', '2026-10-23 13:29', $2, 'e3', 'b2')`,
       [ago(600), ago(60)],
     );
+    // 602 labels: tank 2 of tls2-1 has one; tank 2 of the other console a different one.
+    await owner.query(
+      `INSERT INTO tank_labels (agent_id, console_id, tank, label, collected_at, batch_id) VALUES
+         ('station-a', 'tls2-1', 2, 'DIESEL', $1, 'b2'),
+         ('station-a', 'tls2-1', 3, NULL, $1, 'b2'),
+         ('station-a', 'tls2-2', 2, 'OTRO', $1, 'b2')`,
+      [ago(60)],
+    );
   });
 
   afterAll(async () => {
@@ -147,6 +155,10 @@ describe.skipIf(!process.env.HUB_TEST_PG)("postgres", () => {
       [3, "2026-10-23T13:29:00", 100],
     ]);
     expect(r.tanks[0]!.units).toEqual({ volume: "gal" });
+    expect(r.tanks.map((t) => [t.tank, t.product_label])).toEqual([
+      [2, "DIESEL"],
+      [3, null],
+    ]);
     expect(r.alarms.map((x) => [x.category, x.type, x.alarm_time])).toEqual([
       ["02", "05", "2026-10-22T14:38:00"],
       ["64", "01", "2026-10-19T10:37:00"],
@@ -218,7 +230,7 @@ describe.skipIf(!process.env.HUB_TEST_PG)("postgres", () => {
       [2, "2026-10-22T14:36:00", "2026-10-22T15:01:00", 2100.5, 7050],
       [2, "2026-10-15T09:00:00", "2026-10-15T09:20:00", 1000, 6000],
     ]);
-    expect(r.deliveries[1]).toMatchObject({ console_id: "tls2-1", product_code: "2", start_height: 25.1, end_height: 62.3, units: { volume: "gal" } });
+    expect(r.deliveries[1]).toMatchObject({ console_id: "tls2-1", product_code: "2", product_label: "DIESEL", start_height: 25.1, end_height: 62.3, units: { volume: "gal" } });
     const r2 = await getStation(web, "u-puma", ids.a2!, opt);
     expect(r2.kind === "ok" && r2.deliveries.map((d) => d.console_id)).toEqual(["tls2-2"]);
   });
