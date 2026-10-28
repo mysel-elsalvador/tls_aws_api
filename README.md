@@ -18,7 +18,7 @@ The tables are in the ingest stack's database (`../tls_aws_ingest/migrations/003
 | Table           | What                                                                                                                                                                   |
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `organizations` | a customer. `active = false` (the default) means the subscription is off: no data at all                                                                               |
-| `stations`      | one per console (`agent_id` + `console_id`), owned by one organization. One agent can read several consoles, each its own station, possibly of different organizations |
+| `stations`      | one per console (`agent_id` + `console_id`), owned by one organization. One agent can read several consoles, each its own station, possibly of different organizations. `console_id` is the station's device id: the console and/or the VOX controller with that id (a controller-only station is added with the controller's id) |
 | `org_users`     | Cognito user (`sub`) to organization, with `role` `viewer`/`admin` and `all_stations`                                                                                 |
 | `station_users` | stations granted to a user (only stations of the user's organization; dropped with the user or the station)                                                          |
 
@@ -36,11 +36,15 @@ All of them need `Authorization: Bearer <Cognito access token>`. The contract is
 | `GET /v1/stations`      | stations of the active organizations: agent `online`/`offline`/`never`, console state, tank and active-alarm counts, last reading  |
 | `GET /v1/stations/{id}` | the same summary, plus `tanks` (latest reading per tank), `alarms` (active, from the latest 113 snapshot) and `deliveries` (latest 50 tank deliveries from 202/20C, console times), of that console only |
 | `GET /v1/stations/{id}/history?hours=24` | readings of the last `hours` (1..168, default 24) per tank as `[collected_at, height, volume]`, by agent time (console clocks may be skewed). Index from `tls_aws_ingest/migrations/006` |
+| `GET /v1/stations/{id}/sales?limit=50` | `{sales}`: the latest `limit` (1..50, default 50) sales of the station's VOX controller, by VOX time |
+| `GET /v1/stations/{id}/closes?type=T&before=…` | `{closes, next}`: 20 closed reports of `type` (`T` shift, default; `D` day; `M` month), latest `closed_at` first, with summary totals. `next` (`closed_at_id`, null at the end) is the `before` of the page before. Keyset on `(closed_at, id)`, index from `tls_aws_ingest/migrations/008` |
+| `GET /v1/stations/{id}/closes/{close}` | one close of that controller with its sections (`by_payment_type`, `by_product`, `by_pump`, `by_pump_cash`, `pump_tests`) and the volume `totalizers`. Totalizer amounts are not served (scale not verified), nor the raw report |
 
 - **Agent online:** a heartbeat within `OnlineWindowSeconds` (180 s; the agent sends one every 60 s).
 - **Console state:** what the agent's last heartbeat reported for the station's console. It is `unknown` while the agent is not online.
+- **Devices of a station** (from the agent's last heartbeat): `controller` is set when the station's id is under `controllers`; its state is `online` only while the agent is online and reports it so, otherwise `offline`. `has_console` is false only when the id is under `controllers` and not under `consoles`. Without a heartbeat (or with the id in neither): a console, no controller. Sales and closes alone do not make a controller: a controller dropped from the agent config hides its tab, while its data stays.
 - **Station without a console** (`console.id: null`): registered before `004` on an agent with several consoles. It shows no data until `set_station_console`.
-- **Times:** console times are sent as the console reported them (no zone; the real console is 10 days fast). Times ending in `_at` are UTC.
+- **Times:** console and VOX times (`sale_time`, `opened_at`, `closed_at`) are sent as the device reported them (no zone; the real console is 10 days fast, the VOX clock is not reliable). Other times ending in `_at` are UTC.
 
 ## Deploy
 
@@ -60,7 +64,7 @@ Outputs: `WebUrl` (the site), `ApiUrl`, `UserPoolId`, `UserPoolClientId`, `WebBu
 
 ```sh
 make admin A='{"action":"create_org","slug":"rvq","name":"RVQ El Salvador","active":true}'
-make admin A='{"action":"list"}'      # "consoles": every console the agents report, with its station (null: none yet)
+make admin A='{"action":"list"}'      # "consoles" / "controllers": every console / VOX controller the agents report, with its station (null: none yet)
 make admin A='{"action":"add_station","org":"rvq","agent_id":"station-rvq-001","console_id":"tex-merliot","name":"Texaco Merliot","address":"Ciudad Merliot CP, Santa Tecla 1501, El Salvador"}'
 make user EMAIL=ga.salandra@gmail.com ORG=rvq STATIONS=all   # creates the Cognito user (emails a temporary password), links it, sees every station
 make user EMAIL=x@y.com ORG=rvq STATIONS=2,3                  # sees only stations 2 and 3

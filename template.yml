@@ -193,6 +193,15 @@ Resources:
         StationHistory:
           Type: HttpApi
           Properties: { ApiId: !Ref WebApi, Method: GET, Path: "/v1/stations/{id}/history" }
+        StationSales:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WebApi, Method: GET, Path: "/v1/stations/{id}/sales" }
+        StationCloses:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WebApi, Method: GET, Path: "/v1/stations/{id}/closes" }
+        StationClose:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WebApi, Method: GET, Path: "/v1/stations/{id}/closes/{close}" }
 
   AdminLogGroup:
     Type: AWS::Logs::LogGroup

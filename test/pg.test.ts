@@ -5,7 +5,9 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { run } from "../src/admin";
 import { type Db, wrap } from "../src/db";
-import { getHistory, getStation, listStations, me } from "../src/stations";
+import {
+  type CloseCursor, getClose, getCloses, getHistory, getSales, getStation, listStations, me, parseCursor,
+} from "../src/stations";
 
 const MIGRATIONS = new URL("../../tls_aws_ingest/migrations/", import.meta.url);
 const now = new Date();
@@ -61,8 +63,9 @@ describe.skipIf(!process.env.HUB_TEST_PG)("postgres", () => {
     // Data as the processor would store it.
     await owner.query(
       `INSERT INTO agents (agent_id, first_seen, last_seen, last_heartbeat, last_heartbeat_at, agent_version) VALUES
-         ('station-a', $1, $2, '{"consoles":{"tls2-1":"online","tls2-2":"offline","tls2-9":"online"}}', $2, '1.0'),
-         ('station-b', $1, $1, '{"consoles":{"tls2-1":"online"}}', $1, '0.9'),
+         ('station-a', $1, $2, '{"consoles":{"tls2-1":"online","tls2-2":"offline","tls2-9":"online"},
+                                 "controllers":{"tls2-1":"online","tls2-2":"offline","vox-9":"online"}}', $2, '1.0'),
+         ('station-b', $1, $1, '{"consoles":{"tls2-1":"online"},"controllers":{"tls2-1":"online"}}', $1, '0.9'),
          ('station-c', $1, $2, '{"consoles":{"tls2-1":"offline"}}', $2, '1.0')`,
       [ago(3600), ago(60)],
     );
@@ -145,6 +148,17 @@ describe.skipIf(!process.env.HUB_TEST_PG)("postgres", () => {
       active_alarms: 1,
     });
     expect(b).toMatchObject({ agent: { state: "offline" }, console: { state: "unknown" }, tanks: 0, active_alarms: 0 });
+    // Controllers: as reported while the agent is online, offline when it is not.
+    expect([a, a2, b].map((s) => [s!.has_console, s!.controller])).toEqual([
+      [true, { id: "tls2-1", state: "online" }],
+      [true, { id: "tls2-2", state: "offline" }],
+      [true, { id: "tls2-1", state: "offline" }],
+    ]);
+    await run(tenant, { action: "set_org_active", org: "texaco", active: true });
+    const [c] = await listStations(web, "u-texaco", opt);
+    await run(tenant, { action: "set_org_active", org: "texaco", active: false });
+    // A heartbeat without "controllers": console, no controller.
+    expect(c).toMatchObject({ has_console: true, controller: null });
   });
 
   it("station detail: latest reading per tank, alarms of the latest snapshot", async () => {
@@ -265,6 +279,167 @@ describe.skipIf(!process.env.HUB_TEST_PG)("postgres", () => {
     expect((await getHistory(web, "u-texaco", ids.a!, 24, opt)).kind).toBe("not_found");
     expect((await getHistory(web, "u-none", ids.a!, 24, opt)).kind).toBe("not_found");
     expect((await getHistory(web, "u-texaco", ids.c!, 24, opt)).kind).toBe("inactive");
+  });
+
+  describe("VOX controller", () => {
+    // Real items from the live VOX (2026-10-28), as the processor stores them.
+    const realClose = {
+      by_payment_type: [
+        { section: 1, group: 1, name: "CONTADO", amount: 18.43, volume: 18.19 },
+        { section: 1, group: 3, name: "PRUEBAS SURTIDOR", amount: 0, volume: 0 },
+      ],
+      by_product: [{ section: 2, group: 1, product: "Diesel", ppu: 1.0, amount: 18.43, volume: 18.2 }],
+      by_pump: [
+        { section: 3, group: 1, pump: 1, product: "Diesel", amount: 10.43, volume: 10.28 },
+        { section: 3, group: 1, pump: 2, product: "Diesel", amount: 8.0, volume: 7.91 },
+      ],
+      totalizers: [
+        { pump: 1, hose: "a", product: "Diesel", flags: "SISINO", start_amount_raw: 132, start_volume: 13.14, end_amount_raw: 236, end_volume: 23.42 },
+      ],
+    };
+    const closes: Record<string, string> = {};
+
+    beforeAll(async () => {
+      await owner.query(
+        `INSERT INTO sales (agent_id, controller_id, sale_time, collected_at, pump, hose, hose_letter, product_code,
+                            product_name, amount, volume, ppu, sale_type, record, batch_id) VALUES
+           ('station-a', 'tls2-1', '2026-10-26 16:15:26', $1, 1, 1, 'a', '01', 'Diesel', 3.51, 3.465, 1.000, '01',
+            '2026/10/2616:15:2601a01000000000003.5100000000003.46500000000001.0000100000001', 'v1'),
+           ('station-a', 'tls2-2', '2026-10-27 08:00:00', $1, 2, NULL, '?', '02', NULL, NULL, 1, 1, '07', 'other', 'v1'),
+           ('station-c', 'tls2-1', '2026-10-27 08:00:00', $1, 1, 1, 'a', '01', 'Diesel', 1, 1, 1, '01', 'c', 'v1')`,
+        [ago(60)],
+      );
+      // 55 older sales: the list stops at 50.
+      await owner.query(
+        `INSERT INTO sales (agent_id, controller_id, sale_time, collected_at, pump, amount, volume, ppu, sale_type, record, batch_id)
+         SELECT 'station-a', 'tls2-1', timestamp '2026-10-01' + n * interval '1 minute', now(), 2, n, n, 1, '01', 'r' || n, 'v2'
+         FROM generate_series(1, 55) n`,
+      );
+      const [real] = (
+        await owner.query(
+          `INSERT INTO closes (agent_id, controller_id, type, key, opened_at, closed_at, collected_at, dispatch_count,
+                               total_amount, total_volume, by_payment_type, by_product, by_pump, by_pump_cash, totalizers,
+                               report, batch_id)
+           VALUES ('station-a', 'tls2-1', 'T', '2026/10/2615:07:032026/10/2617:33:47', '2026-10-26 15:07:03',
+                   '2026-10-26 17:33:47', $1, 5, 18.43, 18.20, $2, $3, $4, $4, $5, 'raw report', 'v1')
+           RETURNING id::text`,
+          [ago(60), JSON.stringify(realClose.by_payment_type), JSON.stringify(realClose.by_product),
+           JSON.stringify(realClose.by_pump), JSON.stringify(realClose.totalizers)],
+        )
+      ).rows;
+      closes.real = real.id;
+      // 27 older shift closes, two per closed_at (ties go by id), the page
+      // boundary falls inside a tie; plus a day close and other controllers'.
+      await owner.query(
+        `INSERT INTO closes (agent_id, controller_id, type, key, opened_at, closed_at, collected_at, total_amount, batch_id)
+         SELECT 'station-a', 'tls2-1', 'T', 'k' || n, timestamp '2026-10-01', timestamp '2026-10-01' + (n / 2) * interval '1 hour',
+                now(), n, 'v2'
+         FROM generate_series(1, 27) n`,
+      );
+      const other = (
+        await owner.query(
+          `INSERT INTO closes (agent_id, controller_id, type, key, opened_at, closed_at, collected_at, batch_id) VALUES
+             ('station-a', 'tls2-1', 'D', 'd1', '2026-10-26 00:00', '2026-10-27 00:00', now(), 'v1'),
+             ('station-a', 'tls2-2', 'T', 'o1', '2026-10-26 00:00', '2026-10-27 00:00', now(), 'v1'),
+             ('station-c', 'tls2-1', 'T', 'c1', '2026-10-26 00:00', '2026-10-27 00:00', now(), 'v1')
+           RETURNING key, id::text`,
+        )
+      ).rows as { key: string; id: string }[];
+      for (const r of other) closes[r.key] = r.id;
+    });
+
+    it("sales: the controller's latest 50, numbers as numbers, VOX times as received", async () => {
+      const r = await getSales(web, "u-puma", ids.a!, 50);
+      if (r.kind !== "ok") throw new Error(r.kind);
+      expect(r.value).toHaveLength(50);
+      expect(r.value[0]).toMatchObject({
+        controller_id: "tls2-1", sale_time: "2026-10-26T16:15:26", pump: 1, hose: 1, hose_letter: "a",
+        product_code: "01", product_name: "Diesel", amount: 3.51, volume: 3.465, ppu: 1, sale_type: "01",
+      });
+      expect(r.value[0]).not.toHaveProperty("record");
+      expect(r.value.slice(1, 3).map((s) => s.sale_time)).toEqual(["2026-10-01T00:55:00", "2026-10-01T00:54:00"]);
+      const few = await getSales(web, "u-puma", ids.a!, 2);
+      expect(few.kind === "ok" && few.value.length).toBe(2);
+      // Other controller of the same agent.
+      const a2 = await getSales(web, "u-puma", ids.a2!, 50);
+      expect(a2.kind === "ok" && a2.value.map((s) => [s.controller_id, s.amount, s.sale_type])).toEqual([["tls2-2", null, "07"]]);
+    });
+
+    it("closes: keyset pages, latest first, no gaps or repeats across ties", async () => {
+      const page = async (before: CloseCursor | null, type: "T" | "D" = "T") => {
+        const r = await getCloses(web, "u-puma", ids.a!, type, before);
+        if (r.kind !== "ok") throw new Error(r.kind);
+        return r.value;
+      };
+      const p1 = await page(null);
+      expect(p1.closes).toHaveLength(20);
+      expect(p1.closes[0]).toMatchObject({
+        id: closes.real, type: "T", opened_at: "2026-10-26T15:07:03", closed_at: "2026-10-26T17:33:47",
+        dispatch_count: 5, total_amount: 18.43, total_volume: 18.2,
+      });
+      expect(p1.closes[0]).not.toHaveProperty("by_product");
+      expect(p1.next).toBe(`${p1.closes[19]!.closed_at}_${p1.closes[19]!.id}`);
+      expect(p1.closes[19]!.closed_at).toBe("2026-10-01T04:00:00"); // the tie of k8 and k9
+      const p2 = await page(parseCursor(p1.next!));
+      expect(p2.next).toBeNull();
+      const all = [...p1.closes, ...p2.closes];
+      expect(all).toHaveLength(28);
+      expect(new Set(all.map((c) => c.id)).size).toBe(28);
+      expect(all.slice(1).map((c) => c.total_amount)).toEqual(Array.from({ length: 27 }, (_, i) => 27 - i));
+      expect(all.slice(1).map((c) => c.dispatch_count).every((n) => n === null)).toBe(true);
+      // Other types on request only; other controllers never.
+      expect((await page(null, "D")).closes.map((c) => c.id)).toEqual([closes.d1]);
+      const a2 = await getCloses(web, "u-puma", ids.a2!, "T", null);
+      expect(a2.kind === "ok" && a2.value).toEqual({ closes: [expect.objectContaining({ id: closes.o1 })], next: null });
+    });
+
+    it("close detail: sections, totalizer volumes only, only the station's own", async () => {
+      const r = await getClose(web, "u-puma", ids.a!, closes.real!);
+      if (r.kind !== "ok") throw new Error(r.kind);
+      expect(r.value).toMatchObject({
+        id: closes.real, closed_at: "2026-10-26T17:33:47", total_amount: 18.43,
+        by_payment_type: realClose.by_payment_type, by_product: realClose.by_product,
+        by_pump: realClose.by_pump, by_pump_cash: realClose.by_pump, pump_tests: [],
+      });
+      expect(r.value.totalizers).toEqual([{ pump: 1, hose: "a", product: "Diesel", start_volume: 13.14, end_volume: 23.42 }]);
+      expect(r.value).not.toHaveProperty("report");
+      // Another controller's close, through this station or the other agent's.
+      expect((await getClose(web, "u-puma", ids.a!, closes.o1!)).kind).toBe("not_found");
+      expect((await getClose(web, "u-puma", ids.a!, closes.c1!)).kind).toBe("not_found");
+      expect((await getClose(web, "u-puma", ids.a!, "999999")).kind).toBe("not_found");
+    });
+
+    it("same authorization as the other station endpoints", async () => {
+      for (const [sub, id, kind] of [
+        ["u-texaco", ids.a, "not_found"], // other organization
+        ["u-few", ids.a, "not_found"], // not granted
+        ["u-none", ids.a, "not_found"],
+        ["u-texaco", ids.c, "inactive"],
+        ["u-few", ids.b, "ok"], // granted
+        ["u-both", ids.a, "ok"], // admin
+      ] as const) {
+        expect((await getSales(web, sub, id!, 50)).kind).toBe(kind);
+        expect((await getCloses(web, sub, id!, "T", null)).kind).toBe(kind);
+      }
+      expect((await getClose(web, "u-texaco", ids.c!, closes.c1!)).kind).toBe("inactive");
+      expect((await getClose(web, "u-few", ids.a!, closes.real!)).kind).toBe("not_found");
+    });
+
+    it("a controller-only station: registered with the controller's id, no console", async () => {
+      const list = (await run(tenant, { action: "list" })) as Record<string, any>;
+      expect(list.controllers.filter((c: any) => c.agent_id === "station-a")).toEqual([
+        { agent_id: "station-a", controller_id: "tls2-1", state: "online", station_id: ids.a, station: "Escalonia" },
+        { agent_id: "station-a", controller_id: "tls2-2", state: "offline", station_id: ids.a2, station: "Arce" },
+        { agent_id: "station-a", controller_id: "vox-9", state: "online", station_id: null, station: null },
+      ]);
+      const added = await run(tenant, { action: "add_station", org: "puma", agent_id: "station-a", console_id: "vox-9", name: "Solo VOX" });
+      expect(added).toMatchObject({ ok: true });
+      const s = (await listStations(web, "u-puma", opt)).find((x) => x.name === "Solo VOX");
+      expect(s).toMatchObject({
+        console: { id: "vox-9", state: "unknown" }, has_console: false, controller: { id: "vox-9", state: "online" }, tanks: 0,
+      });
+      await run(tenant, { action: "remove_station", agent_id: "station-a", console_id: "vox-9" });
+    });
   });
 
   it("activating the organization shows its data", async () => {

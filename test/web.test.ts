@@ -1,7 +1,7 @@
 import type { APIGatewayProxyEventV2WithJWTAuthorizer as Event } from "aws-lambda";
 import { describe, expect, it } from "vitest";
 import type { Db } from "../src/db";
-import { agentState, consoleState } from "../src/stations";
+import { agentState, consoleState, controllerState } from "../src/stations";
 import { route } from "../src/web";
 
 const now = new Date("2026-10-16T12:00:00Z");
@@ -101,6 +101,69 @@ describe("route", () => {
     expect((await route(fakeDb([{ ...row, org_active: false }]), e, opt)).statusCode).toBe(403);
   });
 
+  it("station without heartbeat fields: console kept, no controller", async () => {
+    const body = JSON.parse(String((await route(fakeDb([row]), event("GET /v1/stations", "u1"), opt)).body));
+    expect(body.stations[0]).toMatchObject({ has_console: true, controller: null });
+  });
+
+  it("controller from the heartbeat; controller-only when the id is not a console", async () => {
+    const get = async (r: object) =>
+      JSON.parse(String((await route(fakeDb([{ ...row, ...r }]), event("GET /v1/stations/{id}", "u1", "7"), opt)).body)).station;
+    const both = { console_listed: true, controller_listed: true, controller_state: "online" };
+    expect(await get(both)).toMatchObject({ has_console: true, controller: { id: "tls2-1", state: "online" } });
+    expect(await get({ ...both, console_listed: false, controller_state: "offline" }))
+      .toMatchObject({ has_console: false, controller: { id: "tls2-1", state: "offline" } });
+    // A stale heartbeat makes the controller offline.
+    expect(await get({ ...both, last_heartbeat_at: new Date(now.getTime() - 600_000) }))
+      .toMatchObject({ controller: { state: "offline" } });
+  });
+
+  it("VOX routes validate their parameters before querying", async () => {
+    const calls: unknown[][] = [];
+    const call = (routeKey: string, path: Record<string, string>, qs?: Record<string, string>) =>
+      route(fakeDb([row], calls), {
+        ...event(routeKey, "u1"), pathParameters: path, queryStringParameters: qs,
+      } as Event, opt);
+    const bad = [
+      call("GET /v1/stations/{id}/sales", { id: "x" }),
+      ...["0", "51", "abc", "-1", "050"].map((limit) => call("GET /v1/stations/{id}/sales", { id: "7" }, { limit })),
+      call("GET /v1/stations/{id}/closes", { id: "7" }, { type: "X" }),
+      ...["", "2026-10-26T17:33:47", "2026-10-26 17:33:47_1", "2026-10-26T17:33:47_0", "x_1"]
+        .map((before) => call("GET /v1/stations/{id}/closes", { id: "7" }, { before })),
+      call("GET /v1/stations/{id}/closes/{close}", { id: "7", close: "a" }),
+      call("GET /v1/stations/{id}/closes/{close}", { id: "0", close: "1" }),
+    ];
+    for (const res of await Promise.all(bad)) expect(res.statusCode).toBe(400);
+    expect(calls).toHaveLength(0);
+
+    expect((await call("GET /v1/stations/{id}/sales", { id: "7" })).statusCode).toBe(200);
+    expect(calls[1]).toEqual(["station-0042", "tls2-1", 50]);
+    calls.length = 0;
+    const res = await call("GET /v1/stations/{id}/closes", { id: "7" }, { before: "2026-10-26T17:33:47_12" });
+    expect(JSON.parse(String(res.body))).toEqual({ closes: [], next: null });
+    expect(calls[1]).toEqual(["station-0042", "tls2-1", "T", "2026-10-26T17:33:47", "12", 21]);
+    calls.length = 0;
+    await call("GET /v1/stations/{id}/closes", { id: "7" }, { type: "D" });
+    expect(calls[1]).toEqual(["station-0042", "tls2-1", "D", null, null, 21]);
+  });
+
+  it("VOX routes: 404 not the caller's or no such close, 403 inactive", async () => {
+    const e = (routeKey: string, path: Record<string, string>) => ({ ...event(routeKey, "u1"), pathParameters: path }) as Event;
+    for (const [k, p] of [
+      ["GET /v1/stations/{id}/sales", { id: "7" }],
+      ["GET /v1/stations/{id}/closes", { id: "7" }],
+      ["GET /v1/stations/{id}/closes/{close}", { id: "7", close: "3" }],
+    ] as const) {
+      expect((await route(fakeDb([]), e(k, p), opt)).statusCode).toBe(404);
+      const calls: unknown[][] = [];
+      expect((await route(fakeDb([{ ...row, org_active: false }], calls), e(k, p), opt)).statusCode).toBe(403);
+      expect(calls).toHaveLength(1);
+    }
+    // The station is the caller's, but the close is not one of its controller's.
+    expect((await route(fakeDb([row]), e("GET /v1/stations/{id}/closes/{close}", { id: "7", close: "3" }), opt)).statusCode)
+      .toBe(404);
+  });
+
   it("500 without leaking the error", async () => {
     const db: Db = { query: async () => { throw new Error("password authentication failed for hub_web"); } };
     const res = await route(db, event("GET /v1/stations", "u1"), opt);
@@ -123,5 +186,13 @@ describe("status", () => {
     expect(consoleState(null, "online")).toBe("unknown");
     expect(consoleState("online", "offline")).toBe("unknown");
     expect(consoleState("online", "never")).toBe("unknown");
+  });
+
+  it("controller is online only if the agent is online and reported it online", () => {
+    expect(controllerState("online", "online")).toBe("online");
+    expect(controllerState("offline", "online")).toBe("offline");
+    expect(controllerState("unknown", "online")).toBe("offline");
+    expect(controllerState(null, "online")).toBe("offline");
+    expect(controllerState("online", "offline")).toBe("offline");
   });
 });

@@ -1,5 +1,6 @@
 // Admin Lambda: manages organizations, stations and users. A station is one
-// console of an agent (agent_id + console_id). Not behind the
+// device id of an agent (agent_id + console_id): its console and/or its VOX
+// controller with that id. Not behind the
 // API; operators invoke it directly (make admin / scripts/add-user.sh), so
 // whoever may call lambda:InvokeFunction on it is an administrator.
 // DB user hub_tenant: writes only organizations, stations and org_users.
@@ -34,7 +35,7 @@ export async function run(db: Db, req: Request): Promise<Response> {
   try {
     switch (req?.action) {
       case "list": {
-        const [orgs, stations, consoles, users] = await Promise.all([
+        const [orgs, stations, consoles, controllers, users] = await Promise.all([
           db.query(`SELECT org_id::text AS id, slug, name, active, created_at FROM organizations ORDER BY slug`),
           db.query(
             `SELECT s.station_id::text AS id, o.slug AS org, s.agent_id, s.console_id, s.name, s.address
@@ -50,6 +51,17 @@ export async function run(db: Db, req: Request): Promise<Response> {
              LEFT JOIN stations s ON s.agent_id = a.agent_id AND s.console_id = c.console_id
              ORDER BY a.agent_id, c.console_id`,
           ),
+          // The same for VOX controllers. A station's console_id is also its
+          // controller's id: a controller-only station is added with it.
+          db.query(
+            `SELECT a.agent_id, c.controller_id, c.state, s.station_id::text AS station_id, s.name AS station
+             FROM agents a
+             CROSS JOIN LATERAL jsonb_each_text(
+               CASE WHEN jsonb_typeof(a.last_heartbeat->'controllers') = 'object' THEN a.last_heartbeat->'controllers' ELSE '{}' END
+             ) AS c(controller_id, state)
+             LEFT JOIN stations s ON s.agent_id = a.agent_id AND s.console_id = c.controller_id
+             ORDER BY a.agent_id, c.controller_id`,
+          ),
           db.query(
             `SELECT o.slug AS org, u.user_sub AS sub, u.email, u.role, u.all_stations,
                coalesce((SELECT array_agg(g.station_id::text ORDER BY g.station_id) FROM station_users g
@@ -57,7 +69,7 @@ export async function run(db: Db, req: Request): Promise<Response> {
              FROM org_users u JOIN organizations o USING (org_id) ORDER BY o.slug, u.email`,
           ),
         ]);
-        return { ok: true, orgs, stations, consoles, users };
+        return { ok: true, orgs, stations, consoles, controllers, users };
       }
       case "create_org": {
         need(req, "slug", "name");
