@@ -3,7 +3,7 @@ ESBUILD = node_modules/.bin/esbuild --bundle --platform=node --target=node22 --f
 	--external:pg-native --define:process.env.HUB_VERSION='"$(VERSION)"'
 ENV ?= dev
 
-.PHONY: test test-pg typecheck lint build deploy admin user
+.PHONY: test test-pg typecheck lint build deploy cert admin user
 
 # ---- called by `sam build` (BuildMethod: makefile), one target per function
 build-WebFunction:
@@ -26,13 +26,23 @@ typecheck: node_modules
 	npx tsc --noEmit
 
 lint: typecheck
-	cfn-lint template.yml
+	cfn-lint template.yml cert.yml
 
 build: node_modules
 	sam build
 
 deploy: build
 	sam deploy --config-env $(ENV)
+
+# Certificate for the site's custom domain. CloudFront only takes us-east-1
+# certificates, so it is a separate stack there. Prints the ARN for samconfig.toml:
+#   make cert DOMAIN=app.example.com [ZONE=Z0123456789ABC] [ENV=prod]
+cert:
+	@test -n "$(DOMAIN)" || { echo 'usage: make cert DOMAIN=app.example.com [ZONE=Z...] [ENV=prod]'; exit 1; }
+	aws cloudformation deploy --region us-east-1 --stack-name hub-web-$(ENV)-cert --template-file cert.yml \
+		--parameter-overrides DomainName=$(DOMAIN) $(if $(ZONE),HostedZoneId=$(ZONE)) --no-fail-on-empty-changeset
+	@aws cloudformation describe-stacks --region us-east-1 --stack-name hub-web-$(ENV)-cert \
+		--query "Stacks[0].Outputs[?OutputKey=='CertificateArn'].OutputValue" --output text
 
 # Tenancy admin (organizations, stations, users), see README:
 #   make admin A='{"action":"list"}' [ENV=prod]

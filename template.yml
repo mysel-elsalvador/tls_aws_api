@@ -35,10 +35,39 @@ Parameters:
   ApiBurstLimit:
     Type: Number
     Default: 40
+  DomainName:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional custom domain for the site (e.g. app.example.com). Empty = use the CloudFront URL (output WebUrl).
+      Needs CertificateArn. Can be added later with a stack update.
+  CertificateArn:
+    Type: String
+    Default: ""
+    AllowedPattern: '^$|^arn:aws[a-zA-Z-]*:acm:us-east-1:\d{12}:certificate/.+$'
+    ConstraintDescription: an ACM certificate ARN in us-east-1, or empty
+    Description: >-
+      ACM certificate for DomainName, in us-east-1 (CloudFront only takes those): output of the cert.yml stack
+      (make cert DOMAIN=... [ZONE=...]).
+  HostedZoneId:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional Route 53 hosted zone of DomainName. If set, the DNS record is created automatically. If empty (DNS
+      elsewhere), add a CNAME from DomainName to output WebDomainTarget.
+
+Rules:
+  DomainNeedsCertificate:
+    RuleCondition: !Not [!Equals [!Ref DomainName, ""]]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref CertificateArn, ""]]
+        AssertDescription: DomainName needs CertificateArn (us-east-1, make cert).
 
 Conditions:
   IsProd: !Equals [!Ref Stage, prod]
   LocalDev: !Equals [!Ref AllowLocalDev, "true"]
+  HasDomain: !Not [!Equals [!Ref DomainName, ""]]
+  HasZone: !And [!Condition HasDomain, !Not [!Equals [!Ref HostedZoneId, ""]]]
 
 Globals:
   Function:
@@ -85,9 +114,11 @@ Resources:
         AllowAdminCreateUserOnly: true
         InviteMessageTemplate:
           EmailSubject: Acceso a hub
-          EmailMessage: !Sub >-
-            Su usuario es {username} y su contraseña temporal es {####} .
-            Ingrese en https://${WebDistribution.DomainName}/login/ y elija una contraseña nueva.
+          EmailMessage: !Sub
+            - >-
+              Su usuario es {username} y su contraseña temporal es {####} .
+              Ingrese en https://${Site}/login/ y elija una contraseña nueva.
+            - Site: !If [HasDomain, !Ref DomainName, !GetAtt WebDistribution.DomainName]
       # Also the "¿Olvidó su contraseña?" email (ForgotPassword sends a code).
       VerificationMessageTemplate:
         DefaultEmailOption: CONFIRM_WITH_CODE
@@ -145,6 +176,7 @@ Resources:
         # with a top-level !If, and API Gateway then silently has no CORS.
         AllowOrigins:
           - !Sub "https://${WebDistribution.DomainName}"
+          - !If [HasDomain, !Sub "https://${DomainName}", !Ref AWS::NoValue]
           - !If [LocalDev, "http://localhost:3000", !Ref AWS::NoValue]
         AllowMethods: [GET]
         AllowHeaders: [authorization, content-type]
@@ -301,10 +333,20 @@ Resources:
 
   WebDistribution:
     Type: AWS::CloudFront::Distribution
+    # W1030: cfn-lint checks the empty default of CertificateArn, which is only
+    # used under HasDomain, where rule DomainNeedsCertificate requires it.
+    Metadata: { cfn-lint: { config: { ignore_checks: [W1030] } } }
     Properties:
       DistributionConfig:
         Enabled: true
         Comment: !Sub "${AWS::StackName} web"
+        Aliases: !If [HasDomain, [!Ref DomainName], !Ref AWS::NoValue]
+        ViewerCertificate: !If
+          - HasDomain
+          - AcmCertificateArn: !Ref CertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - !Ref AWS::NoValue
         DefaultRootObject: index.html
         HttpVersion: http2and3
         PriceClass: PriceClass_100
@@ -325,6 +367,17 @@ Resources:
         CustomErrorResponses:
           - { ErrorCode: 403, ResponseCode: 404, ResponsePagePath: /404.html, ErrorCachingMinTTL: 60 }
 
+  WebDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasZone
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt WebDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2 # fixed zone of every CloudFront distribution
+
 Outputs:
   ApiUrl:
     Description: NEXT_PUBLIC_API_URL for ../tls_app
@@ -334,7 +387,14 @@ Outputs:
   UserPoolClientId:
     Value: !Ref UserPoolClient
   WebUrl:
-    Value: !Sub "https://${WebDistribution.DomainName}"
+    Value: !If
+      - HasDomain
+      - !Sub "https://${DomainName}"
+      - !Sub "https://${WebDistribution.DomainName}"
+  WebDomainTarget:
+    Condition: HasDomain
+    Description: CNAME target for DomainName when DNS is not in Route 53. The CloudFront URL keeps working.
+    Value: !GetAtt WebDistribution.DomainName
   WebBucketName:
     Value: !Ref WebBucket
   WebDistributionId:

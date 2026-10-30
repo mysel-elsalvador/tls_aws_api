@@ -58,7 +58,26 @@ make deploy ENV=prod            # hub-web-prod, imports from hub-prod, asks to c
 cd ../tls_app && npm run deploy    # build the site with this stack's outputs, upload it
 ```
 
-Outputs: `WebUrl` (the site), `ApiUrl`, `UserPoolId`, `UserPoolClientId`, `WebBucketName`, `WebDistributionId`.
+Outputs: `WebUrl` (the site), `ApiUrl`, `UserPoolId`, `UserPoolClientId`, `WebBucketName`, `WebDistributionId`, `WebDomainTarget` (only with a domain).
+
+### Custom domain for the site (optional, can be added later)
+
+CloudFront only takes ACM certificates from `us-east-1`, so the certificate is a small separate stack there (`cert.yml`, stack `hub-web-<env>-cert`):
+
+```sh
+make cert DOMAIN=app.example.com ZONE=Z0123456789ABC [ENV=prod]   # prints the certificate ARN
+```
+
+Then add the domain to `parameter_overrides` in `samconfig.toml` and deploy again (`make deploy`, then `npm run deploy` in `../tls_app`):
+
+```toml
+parameter_overrides = "Stage=prod IngestStack=hub-prod AllowLocalDev=false DomainName=app.example.com CertificateArn=arn:aws:acm:us-east-1:... HostedZoneId=Z0123456789ABC"
+```
+
+- **DNS in Route 53** (`ZONE` / `HostedZoneId` set): the certificate is validated and the `A` alias record created automatically.
+- **DNS elsewhere** (leave them empty): `make cert` waits for validation. Create the CNAME shown in the cert stack's events. After the web deploy, point `app.example.com` (CNAME) to the `WebDomainTarget` output.
+
+With a domain, `WebUrl`, the Cognito invite email and CORS use it. The CloudFront URL keeps working and stays allowed in CORS. `DomainName` without `CertificateArn` is rejected before anything changes.
 
 ## Customers and users
 
@@ -87,13 +106,13 @@ Whoever can call `lambda:InvokeFunction` on `hub-web-<env>-admin` is an administ
 
 - **DB TLS:** `verify-full` against the CA bundle of the Lambda runtime (`NODE_EXTRA_CA_CERTS=/var/runtime/ca-cert.pem`). If connections fail with a certificate error, deploy with `DbSslMode=require`, which encrypts without verifying, the same as the processor.
 - **Connections:** one per Lambda container, with an IAM token per connection. Many concurrent users means many connections on a `t4g.micro` (about 80 max). Add RDS Proxy before that point.
-- **CORS:** the CloudFront URL, plus `http://localhost:3000` when `AllowLocalDev=true` (dev).
+- **CORS:** the CloudFront URL and the custom domain if set, plus `http://localhost:3000` when `AllowLocalDev=true` (dev).
 - **Cognito email:** the default sender is limited to about 50 emails a day. Use SES for production.
 - **The `tank_latest` / `active_alarms` views** scan each agent's history. That is fine for the pilot; a "current" table kept by the processor will be needed as history grows.
 
 ## Not done yet
 
-- Custom domains for the site and the API (ACM in `us-east-1` for CloudFront).
+- A custom domain for the web API (the site has one, see Deploy).
 - Password reset from the login page, MFA.
 - History endpoints (readings over time, deliveries) and alarm notifications.
 - A role-based admin UI (today it is `make admin`).

@@ -1,0 +1,36 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  hub web: ACM certificate for the site's custom domain. CloudFront only takes certificates from us-east-1, so this
+  small stack lives there (make cert) and its CertificateArn output goes to the web stack. See README.md.
+
+Parameters:
+  DomainName:
+    Type: String
+    Description: Custom domain of the site (e.g. app.example.com).
+  HostedZoneId:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional Route 53 hosted zone of DomainName. If set, the certificate is validated automatically. If empty (DNS
+      elsewhere), add the validation CNAME shown in the stack events; the deploy waits until it validates.
+
+Conditions:
+  HasZone: !Not [!Equals [!Ref HostedZoneId, ""]]
+
+Resources:
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      DomainValidationOptions: !If
+        - HasZone
+        - [{ DomainName: !Ref DomainName, HostedZoneId: !Ref HostedZoneId }]
+        - !Ref AWS::NoValue
+      Tags:
+        - { Key: app, Value: hub }
+
+Outputs:
+  CertificateArn:
+    Description: CertificateArn parameter of the web stack (samconfig.toml).
+    Value: !Ref Certificate

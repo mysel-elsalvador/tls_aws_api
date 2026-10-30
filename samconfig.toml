@@ -13,6 +13,8 @@ capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
 confirm_changeset = false
 parameter_overrides = "Stage=dev IngestStack=hub-dev AllowLocalDev=true"
 
+# Site domain: `make cert DOMAIN=app.example.com [ZONE=Z...]` (us-east-1), then add
+# DomainName=app.example.com CertificateArn=arn:aws:acm:us-east-1:... [HostedZoneId=Z...] to parameter_overrides.
 [prod.deploy.parameters]
 stack_name = "hub-web-prod"
 resolve_s3 = true
