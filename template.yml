@@ -88,6 +88,13 @@ Resources:
           EmailMessage: !Sub >-
             Su usuario es {username} y su contraseña temporal es {####} .
             Ingrese en https://${WebDistribution.DomainName}/login/ y elija una contraseña nueva.
+      # Also the "¿Olvidó su contraseña?" email (ForgotPassword sends a code).
+      VerificationMessageTemplate:
+        DefaultEmailOption: CONFIRM_WITH_CODE
+        EmailSubject: Código de hub
+        EmailMessage: >-
+          Su código es {####} . Escríbalo en la pantalla de inicio de sesión para elegir una contraseña nueva.
+          Si no lo pidió, ignore este correo.
       Policies:
         PasswordPolicy:
           MinimumLength: 12

@@ -171,6 +171,7 @@ export interface CloseTotal {
   group: number;
   name?: string; // payment type (section 1)
   pump?: number;
+  hose?: string; // letter, on VOXes that report per hose ("1a")
   product?: string;
   ppu?: number;
   amount: number | null;
