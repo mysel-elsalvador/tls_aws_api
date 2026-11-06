@@ -213,8 +213,21 @@ async function station(db: Db, sub: string, id: string): Promise<Scoped<SummaryR
 // A bare "id" in ORDER BY is the text output column ("10" < "9"): qualify it.
 const saleCols = `id::text, controller_id, sale_time, collected_at, pump, hose, hose_letter,
   product_code, product_name, amount::float8 AS amount, volume::float8 AS volume, ppu::float8 AS ppu, sale_type`;
+// products: by_product summed per product over its prices, by trimmed name. A
+// sum with any unknown value is null, never a partial total.
 const closeCols = `id::text, controller_id, type, opened_at, closed_at, collected_at, dispatch_count,
-  total_amount::float8 AS total_amount, total_volume::float8 AS total_volume`;
+  total_amount::float8 AS total_amount, total_volume::float8 AS total_volume,
+  COALESCE((
+    SELECT jsonb_agg(jsonb_build_object('product', p.product, 'amount', p.amount, 'volume', p.volume)
+                     ORDER BY p.product NULLS LAST)
+    FROM (
+      SELECT NULLIF(btrim(e.v->>'product'), '') AS product,
+             CASE WHEN count(*) = count(e.v->>'amount') THEN sum((e.v->>'amount')::numeric)::float8 END AS amount,
+             CASE WHEN count(*) = count(e.v->>'volume') THEN sum((e.v->>'volume')::numeric)::float8 END AS volume
+      FROM jsonb_array_elements(closes.by_product) AS e(v)
+      GROUP BY 1
+    ) p
+  ), '[]'::jsonb) AS products`;
 
 /** The station controller's latest `limit` sales by VOX time, latest first. */
 export async function getSales(db: Db, sub: string, id: string, limit: number): Promise<Scoped<Sale[]>> {

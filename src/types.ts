@@ -163,6 +163,14 @@ export interface CloseSummary {
   dispatch_count: number | null; // sales the VOX lists in the period; null: not counted
   total_amount: number | null;
   total_volume: number | null;
+  products: ProductTotal[]; // by_product summed over prices, by product name
+}
+
+/** A product's sales in a close, all prices together. Null: some row had no value. */
+export interface ProductTotal {
+  product: string | null;
+  amount: number | null;
+  volume: number | null;
 }
 
 /** One sales total of a closed report, as the agent decoded it. */

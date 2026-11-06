@@ -1,4 +1,4 @@
-version = 0.4
+version = 0.5
 
 [default.global.parameters]
 region = "us-east-2" # same account and region as the ingest stack (../tls_aws_ingest)

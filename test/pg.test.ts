@@ -346,6 +346,15 @@ describe.skipIf(!process.env.HUB_TEST_PG)("postgres", () => {
         )
       ).rows as { key: string; id: string }[];
       for (const r of other) closes[r.key] = r.id;
+      // Two prices of one product, a padded name, an unknown volume.
+      await owner.query(`UPDATE closes SET by_product = $1 WHERE key = 'd1'`, [
+        JSON.stringify([
+          { section: 2, group: 1, product: "POWER PLUS 1", ppu: 4.73, amount: 10.5, volume: 2.2 },
+          { section: 2, group: 1, product: "POWER PLUS 1", ppu: 4.8, amount: 1.25, volume: 0.25 },
+          { section: 2, group: 1, product: "DIESEL ", ppu: 4.81, amount: 5, volume: null },
+          { section: 2, group: 1, product: "DIESEL", ppu: 4.81, amount: 2, volume: 1 },
+        ]),
+      ]);
     });
 
     it("sales: the controller's latest 50, numbers as numbers, VOX times as received", async () => {
@@ -376,8 +385,15 @@ describe.skipIf(!process.env.HUB_TEST_PG)("postgres", () => {
       expect(p1.closes[0]).toMatchObject({
         id: closes.real, type: "T", opened_at: "2026-10-26T15:07:03", closed_at: "2026-10-26T17:33:47",
         dispatch_count: 5, total_amount: 18.43, total_volume: 18.2,
+        products: [{ product: "Diesel", amount: 18.43, volume: 18.2 }],
       });
       expect(p1.closes[0]).not.toHaveProperty("by_product");
+      expect(p1.closes[1]!.products).toEqual([]);
+      // Summed over prices by trimmed name; an unknown value makes the sum unknown.
+      expect((await page(null, "D")).closes[0]!.products).toEqual([
+        { product: "DIESEL", amount: 7, volume: null },
+        { product: "POWER PLUS 1", amount: 11.75, volume: 2.45 },
+      ]);
       expect(p1.next).toBe(`${p1.closes[19]!.closed_at}_${p1.closes[19]!.id}`);
       expect(p1.closes[19]!.closed_at).toBe("2026-10-01T04:00:00"); // the tie of k8 and k9
       const p2 = await page(parseCursor(p1.next!));
