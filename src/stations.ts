@@ -215,6 +215,10 @@ const saleCols = `id::text, controller_id, sale_time, collected_at, pump, hose, 
   product_code, product_name, amount::float8 AS amount, volume::float8 AS volume, ppu::float8 AS ppu, sale_type`;
 // products: by_product summed per product over its prices, by trimmed name. A
 // sum with any unknown value is null, never a partial total.
+// pumps: by_pump (section 3) summed per pump over its hoses, which are kept.
+// idle_pumps: pumps in the totalizers (section 9, every hose) with no section 3
+// row. Both real VOXes leave pumps without sales out of section 3 (their
+// totalizers did not move), so these are the pumps that sold nothing.
 const closeCols = `id::text, controller_id, type, opened_at, closed_at, collected_at, dispatch_count,
   total_amount::float8 AS total_amount, total_volume::float8 AS total_volume,
   COALESCE((
@@ -227,7 +231,33 @@ const closeCols = `id::text, controller_id, type, opened_at, closed_at, collecte
       FROM jsonb_array_elements(closes.by_product) AS e(v)
       GROUP BY 1
     ) p
-  ), '[]'::jsonb) AS products`;
+  ), '[]'::jsonb) AS products,
+  COALESCE((
+    SELECT jsonb_agg(jsonb_build_object('pump', p.pump, 'amount', p.amount, 'volume', p.volume, 'hoses', p.hoses)
+                     ORDER BY p.pump)
+    FROM (
+      SELECT (e.v->>'pump')::int AS pump,
+             CASE WHEN count(*) = count(e.v->>'amount') THEN sum((e.v->>'amount')::numeric)::float8 END AS amount,
+             CASE WHEN count(*) = count(e.v->>'volume') THEN sum((e.v->>'volume')::numeric)::float8 END AS volume,
+             jsonb_agg(jsonb_build_object(
+               'hose', NULLIF(e.v->>'hose', ''), 'product', NULLIF(btrim(e.v->>'product'), ''),
+               'amount', (e.v->>'amount')::float8, 'volume', (e.v->>'volume')::float8
+             ) ORDER BY e.v->>'hose' NULLS FIRST, e.v->>'product') AS hoses
+      FROM jsonb_array_elements(closes.by_pump) AS e(v)
+      WHERE e.v->>'pump' IS NOT NULL
+      GROUP BY 1
+    ) p
+  ), '[]'::jsonb) AS pumps,
+  COALESCE((
+    SELECT jsonb_agg(q.pump ORDER BY q.pump)
+    FROM (
+      SELECT DISTINCT (t.v->>'pump')::int AS pump
+      FROM jsonb_array_elements(closes.totalizers) AS t(v)
+      WHERE t.v->>'pump' IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(closes.by_pump) AS b(v)
+                        WHERE (b.v->>'pump')::int = (t.v->>'pump')::int)
+    ) q
+  ), '[]'::jsonb) AS idle_pumps`;
 
 /** The station controller's latest `limit` sales by VOX time, latest first. */
 export async function getSales(db: Db, sub: string, id: string, limit: number): Promise<Scoped<Sale[]>> {

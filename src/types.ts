@@ -164,6 +164,23 @@ export interface CloseSummary {
   total_amount: number | null;
   total_volume: number | null;
   products: ProductTotal[]; // by_product summed over prices, by product name
+  pumps: PumpTotal[]; // by_pump summed per pump, pump order
+  idle_pumps: number[]; // pumps in the totalizers with no sales row: sold nothing
+}
+
+/** A pump's sales in a close, all hoses together. Null: some row had no value. */
+export interface PumpTotal {
+  pump: number;
+  amount: number | null;
+  volume: number | null;
+  hoses: HoseTotal[]; // one per hose (or per product on VOXes that report per pump)
+}
+
+export interface HoseTotal {
+  hose: string | null; // letter; null on VOXes that report per pump
+  product: string | null;
+  amount: number | null;
+  volume: number | null;
 }
 
 /** A product's sales in a close, all prices together. Null: some row had no value. */

@@ -355,6 +355,21 @@ describe.skipIf(!process.env.HUB_TEST_PG)("postgres", () => {
           { section: 2, group: 1, product: "DIESEL", ppu: 4.81, amount: 2, volume: 1 },
         ]),
       ]);
+      // Per hose (as tex-merliot), an unknown amount, a pump with no sales row.
+      await owner.query(`UPDATE closes SET by_pump = $1, totalizers = $2 WHERE key = 'd1'`, [
+        JSON.stringify([
+          { section: 3, group: 1, pump: 1, hose: "b", product: "PREMIUN 1 ", amount: 3, volume: 0.6 },
+          { section: 3, group: 1, pump: 1, hose: "a", product: "DIESEL", amount: 5, volume: 1 },
+          { section: 3, group: 1, pump: 2, hose: "a", product: "DIESEL", volume: 2 },
+        ]),
+        JSON.stringify([
+          { pump: 1, hose: "a", product: "DIESEL", start_volume: 1, end_volume: 2 },
+          { pump: 2, hose: "a", product: "DIESEL", start_volume: 1, end_volume: 3 },
+          { pump: 3, hose: "a", product: "DIESEL", start_volume: 5, end_volume: 5 },
+          { pump: 3, hose: "b", product: "PREMIUN 1", start_volume: 5, end_volume: 5 },
+          { hose: "z", product: "?" },
+        ]),
+      ]);
     });
 
     it("sales: the controller's latest 50, numbers as numbers, VOX times as received", async () => {
@@ -390,10 +405,30 @@ describe.skipIf(!process.env.HUB_TEST_PG)("postgres", () => {
       expect(p1.closes[0]).not.toHaveProperty("by_product");
       expect(p1.closes[1]!.products).toEqual([]);
       // Summed over prices by trimmed name; an unknown value makes the sum unknown.
-      expect((await page(null, "D")).closes[0]!.products).toEqual([
+      const d1 = (await page(null, "D")).closes[0]!;
+      expect(d1.products).toEqual([
         { product: "DIESEL", amount: 7, volume: null },
         { product: "POWER PLUS 1", amount: 11.75, volume: 2.45 },
       ]);
+      // Pumps: hoses summed (unknown stays unknown), idle = totalizers without sales.
+      expect(p1.closes[0]!.pumps).toEqual([
+        { pump: 1, amount: 10.43, volume: 10.28, hoses: [{ hose: null, product: "Diesel", amount: 10.43, volume: 10.28 }] },
+        { pump: 2, amount: 8, volume: 7.91, hoses: [{ hose: null, product: "Diesel", amount: 8, volume: 7.91 }] },
+      ]);
+      expect(p1.closes[0]!.idle_pumps).toEqual([]);
+      expect(d1.pumps).toEqual([
+        {
+          pump: 1, amount: 8, volume: 1.6,
+          hoses: [
+            { hose: "a", product: "DIESEL", amount: 5, volume: 1 },
+            { hose: "b", product: "PREMIUN 1", amount: 3, volume: 0.6 },
+          ],
+        },
+        { pump: 2, amount: null, volume: 2, hoses: [{ hose: "a", product: "DIESEL", amount: null, volume: 2 }] },
+      ]);
+      expect(d1.idle_pumps).toEqual([3]);
+      expect(p1.closes[1]!.pumps).toEqual([]);
+      expect(p1.closes[1]!.idle_pumps).toEqual([]);
       expect(p1.next).toBe(`${p1.closes[19]!.closed_at}_${p1.closes[19]!.id}`);
       expect(p1.closes[19]!.closed_at).toBe("2026-10-01T04:00:00"); // the tie of k8 and k9
       const p2 = await page(parseCursor(p1.next!));
