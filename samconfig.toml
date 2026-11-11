@@ -11,7 +11,7 @@ stack_name = "hub-web-dev"
 resolve_s3 = true
 capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
 confirm_changeset = false
-parameter_overrides = "Stage=dev IngestStack=hub-dev AllowLocalDev=true"
+parameter_overrides = "Stage=dev IngestStack=hub-dev AllowLocalDev=true DomainName=stationsview.com CertificateArn=arn:aws:acm:us-east-1:154121686420:certificate/fcd22853-cf45-4350-8afc-f1867f3c76a6"
 
 # Site domain: `make cert DOMAIN=app.example.com [ZONE=Z...]` (us-east-1), then add
 # DomainName=app.example.com CertificateArn=arn:aws:acm:us-east-1:... [HostedZoneId=Z...] to parameter_overrides.

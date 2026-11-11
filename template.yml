@@ -113,7 +113,7 @@ Resources:
       AdminCreateUserConfig:
         AllowAdminCreateUserOnly: true
         InviteMessageTemplate:
-          EmailSubject: Acceso a hub
+          EmailSubject: Acceso a StationsView
           EmailMessage: !Sub
             - >-
               Su usuario es {username} y su contraseña temporal es {####} .
@@ -122,7 +122,7 @@ Resources:
       # Also the "¿Olvidó su contraseña?" email (ForgotPassword sends a code).
       VerificationMessageTemplate:
         DefaultEmailOption: CONFIRM_WITH_CODE
-        EmailSubject: Código de hub
+        EmailSubject: Código de StationsView
         EmailMessage: >-
           Su código es {####} . Escríbalo en la pantalla de inicio de sesión para elegir una contraseña nueva.
           Si no lo pidió, ignore este correo.
